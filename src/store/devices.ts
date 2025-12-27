@@ -4,8 +4,16 @@
 
 import { create } from "zustand";
 
+export interface NormalizedDevice {
+  id: string;
+  state: Record<string, any>;
+  availability?: "online" | "offline";
+  meta?: Record<string, any>;
+  lastUpdate: number;
+}
+
 interface DeviceStore {
-  devices: Record<string, any>;
+  devices: Record<string, NormalizedDevice>;
   updateFromMqtt: (topic: string, payload: string) => void;
 }
 
@@ -13,26 +21,64 @@ export const useDeviceStore = create<DeviceStore>((set) => ({
   devices: {},
 
   updateFromMqtt: (topic, payload) => {
+    let data: any;
+
     try {
-      const parts = topic.split("/");
-      if (parts.length < 2) return; // Topic not in expected format
+      data = JSON.parse(payload);
+    } catch {
+      return; // ignoriraj ne-JSON
+    }
 
-      const deviceId = parts[1];
-      const data = JSON.parse(payload);
+    const parts = topic.split("/");
 
-      set((state) => ({
+    // očekujemo barem: base/device
+    if (parts.length < 2) return;
+
+    const base = parts[0];
+    const deviceId = parts[1];
+    const subTopic = parts[2]; // undefined | availability | set | ...
+
+    // ignoriraj bridge i set
+    if (deviceId === "bridge" || subTopic === "set") return;
+
+    set((state) => {
+      const existing = state.devices[deviceId] ?? {
+        id: deviceId,
+        state: {},
+        lastUpdate: Date.now(),
+      };
+
+      // availability poruka
+      if (subTopic === "availability") {
+        return {
+          devices: {
+            ...state.devices,
+            [deviceId]: {
+              ...existing,
+              availability: data.state,
+              lastUpdate: Date.now(),
+            },
+          },
+        };
+      }
+
+      // normalna state poruka
+      const { device, ...cleanState } = data;
+
+      return {
         devices: {
           ...state.devices,
           [deviceId]: {
-            ...state.devices[deviceId], // Keep existing properties
-            ...data, // Overlay new data from payload
-            friendly_name: data.friendly_name || deviceId, // Use friendly_name from payload or deviceId
+            ...existing,
+            state: {
+              ...existing.state,
+              ...cleanState,
+            },
+            meta: device ?? existing.meta,
+            lastUpdate: Date.now(),
           },
         },
-      }));
-    } catch (error) {
-      console.error("Failed to parse MQTT payload or update device store:", error);
-      // Optionally, handle non-JSON messages or other errors
-    }
+      };
+    });
   },
 }));
